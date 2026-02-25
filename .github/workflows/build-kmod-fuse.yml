@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 环境准备（适配Alpine/apk构建，修复apk-tools安装）
+      - name: 环境准备（适配Alpine/apk构建，修复apk-tools编译）
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -16,18 +16,23 @@ jobs:
           sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt update -y
           sudo apt full-upgrade -y
-          # 安装基础构建依赖（移除apk-tools，后续手动编译）
-          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget curl autoconf automake libtool
-          # 手动编译安装apk-tools（GitHub Actions Ubuntu 22.04 兼容方案）
-          git clone https://github.com/alpinelinux/apk-tools.git
+          # 安装基础构建依赖 + apk-tools编译必需的自动构建工具
+          sudo apt install -y \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev \
+            file wget curl autoconf automake libtool pkg-config
+          # 手动编译安装apk-tools（解决Ubuntu无apt包问题）
+          git clone --depth=1 https://github.com/alpinelinux/apk-tools.git
           cd apk-tools
+          # 确保autogen.sh可执行 + 补全构建依赖
+          chmod +x autogen.sh
           ./autogen.sh
-          ./configure --prefix=/usr
+          ./configure --prefix=/usr --disable-static
           make -j$(nproc)
           sudo make install
-          # 验证apk-tools安装成功
+          # 验证安装成功
           apk --version
-          # 清理编译残留+系统清理
+          # 清理残留
           cd .. && rm -rf apk-tools
           sudo apt autoremove -y && sudo apt clean -y
 
