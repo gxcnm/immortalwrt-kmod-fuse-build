@@ -1,4 +1,4 @@
-name: Build kmod-fuse (apk) for 360V6 (ImmortalWrt)
+name: Build kmod-fuse && dependencies (apk) for 360V6 (ImmortalWrt)
 
 # 手动触发编译
 on:
@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 环境准备（适配Alpine/apk构建，修复apk-tools编译）
+      - name: 环境准备（修复apk-tools编译 + 基础依赖）
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -21,12 +21,12 @@ jobs:
             build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
             gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev \
             file wget curl autoconf automake libtool pkg-config
-          # 手动编译安装apk-tools（解决Ubuntu无apt包问题）
+          # 修复：apk-tools源码目录结构变更，autogen.sh在scripts/下
           git clone --depth=1 https://github.com/alpinelinux/apk-tools.git
           cd apk-tools
-          # 确保autogen.sh可执行 + 补全构建依赖
-          chmod +x autogen.sh
-          ./autogen.sh
+          # 补全构建依赖 + 执行正确的autogen.sh
+          chmod +x scripts/autogen.sh
+          ./scripts/autogen.sh
           ./configure --prefix=/usr --disable-static
           make -j$(nproc)
           sudo make install
@@ -36,9 +36,9 @@ jobs:
           cd .. && rm -rf apk-tools
           sudo apt autoremove -y && sudo apt clean -y
 
-      - name: 克隆最新ImmortalWrt源码（适配apk体系）
+      - name: 克隆指定版本ImmortalWrt源码（适配apk体系）
         run: |
-          # 克隆切换apk后的最新源码（匹配你的commit: f9fbaa7017）
+          # 克隆切换apk后的指定版本源码（匹配你的commit: f9fbaa7017）
           git clone https://github.com/immortalwrt/immortalwrt.git
           cd immortalwrt
           git checkout f9fbaa7017  # 严格匹配你的固件版本
@@ -49,47 +49,69 @@ jobs:
           echo "CONFIG_PACKAGE_MANAGER=apk" >> .config
           echo "CONFIG_APK_BUILD=y" >> .config
 
-      - name: 配置编译选项（360V6 + kmod-fuse + apk）
+      - name: 配置编译选项（360V6 + 所有需要的模块 + apk）
         run: |
           cd immortalwrt
           # 加载360V6基础配置（IPQ60xx + 6.6内核）
           cp configs/qualcommax/ipq60xx/config-6.6 .config
-          # 配置仅编译kmod-fuse，适配apk
+          # 配置需要编译的所有模块（核心修改点）
           make menuconfig -o .config << EOF
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y
+          # 核心模块：kmod-fuse
           CONFIG_PACKAGE_kmod-fuse=y
+          # 依赖模块：8个缺失的包
+          CONFIG_PACKAGE_kmod-fs-btrfs=y
+          CONFIG_PACKAGE_kmod-ipt-extra=y
+          CONFIG_PACKAGE_kmod-ipt-nat=y
+          CONFIG_PACKAGE_kmod-ipt-nat6=y
+          CONFIG_PACKAGE_kmod-ipt-physdev=y
+          CONFIG_PACKAGE_kmod-nf-ipvs=y
+          CONFIG_PACKAGE_kmod-veth=y
+          CONFIG_PACKAGE_kmod-ipt-fullconenat=y
+          # 工具集（可选，保留fuse-utils）
           CONFIG_PACKAGE_fuse-utils=y
+          # 强制apk构建体系
           CONFIG_PACKAGE_MANAGER=apk
           CONFIG_APK_BUILD=y
           CONFIG_ALL_NONSHARED=y
           EOF
-          # 生成最终配置
+          # 生成最终配置（验证配置无冲突）
           make defconfig
 
-      - name: 编译kmod-fuse（apk格式）
+      - name: 编译所有指定模块（apk格式）
         run: |
           cd immortalwrt
-          # 仅编译kmod-fuse和fuse-utils，加速构建
-          make package/kmod-fuse/compile V=s -j$(nproc)
-          make package/fuse-utils/compile V=s -j$(nproc)
+          # 编译核心模块 + 所有依赖模块（按顺序加速构建）
+          MODULES="kmod-fuse kmod-fs-btrfs kmod-ipt-extra kmod-ipt-nat kmod-ipt-nat6 kmod-ipt-physdev kmod-nf-ipvs kmod-veth kmod-ipt-fullconenat fuse-utils"
+          for MOD in $MODULES; do
+              make package/$MOD/compile V=s -j$(nproc)
+          done
           # 将ipk转换为apk（ImmortalWrt apk体系的核心步骤）
           ./scripts/ipk2apk.sh bin/targets/qualcommax/ipq60xx/packages/*.ipk
           ./scripts/ipk2apk.sh bin/packages/aarch64_cortex-a53/base/*.ipk
 
-      - name: 提取apk格式产物
+      - name: 提取所有apk格式产物
         run: |
           # 创建输出目录
           mkdir -p ./kmod-fuse-apk-output
-          # 复制转换后的apk包（适配aarch64）
+          # 复制所有需要的apk包（包含依赖模块）
           find immortalwrt/bin -name "kmod-fuse-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-fs-btrfs-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-ipt-extra-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-ipt-nat-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-ipt-nat6-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-ipt-physdev-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-nf-ipvs-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-veth-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
+          find immortalwrt/bin -name "kmod-ipt-fullconenat-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
           find immortalwrt/bin -name "fuse-utils-*.apk" -exec cp {} ./kmod-fuse-apk-output/ \;
           # 列出产物，确认生成成功
           ls -l ./kmod-fuse-apk-output/
 
-      - name: 上传apk产物到GitHub Artifacts
+      - name: 上传所有apk产物到GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kmod-fuse-360v6-apk
+          name: kmod-fuse-and-deps-360v6-apk
           path: ./kmod-fuse-apk-output/
